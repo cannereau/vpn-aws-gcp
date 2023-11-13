@@ -58,12 +58,40 @@ resource "aws_vpn_connection" "aws_vpn_cnx" {
   tunnel1_phase2_integrity_algorithms  = ["SHA2-512"]
 }
 
-# route to gcp vpc
+# route vpn to gcp vpc
 resource "aws_vpn_connection_route" "aws_vpn_routes" {
   for_each = data.google_compute_subnetwork.gcp_subnets
 
   destination_cidr_block = each.value.ip_cidr_range
   vpn_connection_id      = aws_vpn_connection.aws_vpn_cnx.id
+}
+
+# vpc route tables
+data "aws_route_tables" "aws_vpc_routes" {
+  vpc_id = var.aws_vpc_id
+}
+
+# define routes
+locals {
+  routes = flatten([
+    for rt_id in data.aws_route_tables.aws_vpc_routes.ids : [
+      for subnet in data.google_compute_subnetwork.gcp_subnets : {
+        route_table_id = rt_id
+        cidr_block     = subnet.ip_cidr_range
+      }
+    ]
+  ])
+}
+
+# add routes to route tables
+resource "aws_route" "route" {
+  for_each = {
+    for rt in local.routes : "${rt.route_table_id}_${rt.cidr_block}" => rt
+  }
+
+  route_table_id         = each.value.route_table_id
+  destination_cidr_block = each.value.cidr_block
+  gateway_id             = aws_vpn_gateway.aws_vpn_gw.id
 }
 
 ###################
@@ -78,6 +106,7 @@ data "google_compute_network" "gcp_vpc" {
 # subnets
 data "google_compute_subnetwork" "gcp_subnets" {
   for_each  = toset(data.google_compute_network.gcp_vpc.subnetworks_self_links)
+
   self_link = each.key
 }
 
